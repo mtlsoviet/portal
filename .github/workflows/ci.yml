@@ -1,0 +1,42 @@
+name: CI
+
+on:                               # the events that start this workflow
+  pull_request:                   # every pull request
+  push:
+    branches: [main]              # and every push to main (that's what a merge is)
+
+permissions:
+  contents: read                  # the workflow's automatic GitHub token can only read the repo
+
+jobs:
+  test:                           # job name: it shows up as the "test" check on pull requests
+    runs-on: ubuntu-24.04         # a fresh Ubuntu VM from GitHub, thrown away after the job
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7   # "uses" = run a published action; this one clones the repo
+
+      - name: Lint the Dockerfile
+        run: docker run --rm -i hadolint/hadolint:v2.12.0 < Dockerfile
+        # "run" = a shell command. hadolint checks Dockerfile best practices;
+        # -i + "< Dockerfile" feeds the file into the container's input
+
+      - name: Build the image
+        run: docker build -t portal:ci .
+
+      - name: Smoke test
+        run: |
+          docker run -d --name portal -p 8080:8080 portal:ci
+          sleep 3
+          curl -fsS http://localhost:8080/ | grep -q "<title>Home</title>"
+          curl -fsS http://localhost:8080/apps.json | jq -e 'length > 0'
+        # "|" = several lines of shell. Any failing line fails the step.
+        # curl -f = fail on HTTP errors; -sS = quiet, but still print errors
+        # grep -q = just say yes/no; jq -e = fail if the expression is false
+
+      - name: Scan for critical vulnerabilities
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.69.3 image --exit-code 1 --severity CRITICAL --ignore-unfixed portal:ci
+        # The socket mount lets Trivy read the image you just built.
+        # --exit-code 1 = fail the job if anything is found; --ignore-unfixed = skip
+        # vulnerabilities that have no fix yet (you couldn't act on them anyway)
